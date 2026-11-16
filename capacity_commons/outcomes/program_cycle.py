@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from capacity_commons.programs.charter import ContractError, Decision, DomainRecord, RuleResult, bounded
+from capacity_commons.programs.charter import ContractError, Decision, DomainRecord, RuleResult, bounded, normalized_text
 from capacity_commons.curation.coverage_map import grouped_metrics, record_score
+from capacity_commons.curation.strata import gate_outcome
 from capacity_commons.monitoring.participation_gates import evaluate
 
 STATES = ['proposed', 'funded', 'enrolling', 'delivering', 'evaluated', 'archived']
@@ -1150,9 +1151,15 @@ def decide(record: DomainRecord, context: Mapping[str, Any] | None = None) -> De
         outcome = 'review'
     else:
         outcome = 'reject'
-    reasons = (f"score={scorecard['score']:.6f}", f"critical={critical}",
-               f"guards={guards['passed']}/{guards['passed'] + guards['failed']}")
-    return Decision(record.record_id, outcome, effective_score, reasons, rules, scorecard['metrics'])
+    stratum_evidence = normalized_text(context.get('stratum_evidence', ''))
+    outcome = gate_outcome(outcome, stratum_evidence)
+    reasons = [f"score={scorecard['score']:.6f}", f"critical={critical}",
+               f"guards={guards['passed']}/{guards['passed'] + guards['failed']}"]
+    if stratum_evidence:
+        reasons.append(f"stratum={context.get('stratum_key', 'unknown')}")
+        reasons.append(f"stratum_evidence={stratum_evidence}")
+        reasons.append(f"stratum_scope={str(context.get('stratum_scope', ''))[:12]}")
+    return Decision(record.record_id, outcome, effective_score, tuple(reasons), rules, scorecard['metrics'])
 
 def advance_for_outcome(record: DomainRecord, decision: Decision) -> DomainRecord:
     current = STATES.index(record.state)

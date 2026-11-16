@@ -175,6 +175,19 @@ class Repository:
                               {"decision_id": decision_id, "outcome": decision.outcome, "score": decision.score})
         return decision_id
 
+    def payload_revisions(self) -> dict[str, int]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT record_id,payload_json FROM record_versions ORDER BY record_id,version").fetchall()
+        revisions: dict[str, int] = {}
+        previous: dict[str, str] = {}
+        for row in rows:
+            record_id = row["record_id"]
+            payload = row["payload_json"]
+            if record_id in previous and previous[record_id] != payload:
+                revisions[record_id] = revisions.get(record_id, 0) + 1
+            previous[record_id] = payload
+        return revisions
+
     def event_count(self, aggregate_id: str, connection: sqlite3.Connection | None = None) -> int:
         owns = connection is None
         connection = connection or self.connect()

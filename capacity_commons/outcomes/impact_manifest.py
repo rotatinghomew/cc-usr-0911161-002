@@ -47,29 +47,40 @@ def write_rules(path: Path, decisions: Mapping[str, Decision]) -> int:
     return count
 
 
-def build_summary(records: list[DomainRecord], decisions: Mapping[str, Decision], snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def build_summary(records: list[DomainRecord], decisions: Mapping[str, Decision], snapshot: Mapping[str, Any],
+                  analysis: Mapping[str, Any] | None = None) -> dict[str, Any]:
     outcomes: dict[str, int] = {}
     for decision in decisions.values():
         outcomes[decision.outcome] = outcomes.get(decision.outcome, 0) + 1
     scores = [decision.score for decision in decisions.values()]
-    return {"product": '全球南方人工智能能力建设项目编排中心', "entity": 'capacity_program', "generated_at": utc_now(),
-            "record_count": len(records), "decision_count": len(decisions), "outcomes": outcomes,
-            "average_score": sum(scores) / len(scores) if scores else 0.0,
-            "minimum_score": min(scores) if scores else 0.0, "maximum_score": max(scores) if scores else 0.0,
-            "repository": snapshot}
+    summary = {"product": '全球南方人工智能能力建设项目编排中心', "entity": 'capacity_program', "generated_at": utc_now(),
+               "record_count": len(records), "decision_count": len(decisions), "outcomes": outcomes,
+               "average_score": sum(scores) / len(scores) if scores else 0.0,
+               "minimum_score": min(scores) if scores else 0.0, "maximum_score": max(scores) if scores else 0.0,
+               "repository": snapshot}
+    if analysis is not None:
+        country_track = analysis["levels"]["country_track"]
+        summary["analysis"] = {"analysis_hash": analysis["analysis_hash"],
+                               "scope_hash": analysis["scope"]["scope_hash"],
+                               "strata_level": country_track["dimension"],
+                               "strata_sufficient": country_track["sufficient"],
+                               "strata_insufficient": country_track["insufficient"]}
+    return summary
 
 
 def export_bundle(output: str | Path, records: list[DomainRecord], decisions: Mapping[str, Decision],
-                  snapshot: Mapping[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+                  snapshot: Mapping[str, Any], events: list[dict[str, Any]],
+                  analysis: Mapping[str, Any] | None = None) -> dict[str, Any]:
     root = ensure_output(output)
-    summary = build_summary(records, decisions, snapshot)
+    summary = build_summary(records, decisions, snapshot, analysis)
     record_count = write_records(root / "records.csv", records, decisions)
     rule_count = write_rules(root / "rules.csv", decisions)
-    summary_hash = write_json(root / "summary.json", summary)
-    decision_hash = write_json(root / "decisions.json", [value.as_dict() for _, value in sorted(decisions.items())])
-    event_hash = write_json(root / "audit-events.json", events)
-    manifest = {"files": {"summary.json": summary_hash, "decisions.json": decision_hash,
-                           "audit-events.json": event_hash}, "record_rows": record_count,
+    files = {"summary.json": write_json(root / "summary.json", summary),
+             "decisions.json": write_json(root / "decisions.json", [value.as_dict() for _, value in sorted(decisions.items())]),
+             "audit-events.json": write_json(root / "audit-events.json", events)}
+    if analysis is not None:
+        files["analysis.json"] = write_json(root / "analysis.json", analysis)
+    manifest = {"files": files, "record_rows": record_count,
                 "rule_rows": rule_count, "created_at": utc_now()}
     manifest["manifest_hash"] = stable_hash(manifest)
     write_json(root / "manifest.json", manifest)

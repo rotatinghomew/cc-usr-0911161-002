@@ -9,6 +9,7 @@ from capacity_commons.grants.allocation_ledger import Repository
 from capacity_commons.outcomes.program_cycle import advance_for_outcome, decide
 from capacity_commons.outcomes.impact_manifest import export_bundle, verify_bundle
 from capacity_commons.monitoring.coverage_clock import derive_context
+from capacity_commons.curation.strata import stratified_analysis, stratum_context
 
 from capacity_commons.equity_monitor.equity_signal import augment_context
 
@@ -16,6 +17,9 @@ class Application:
     def __init__(self, database: str | Path, context: Mapping[str, Any] | None = None):
         self.repository = Repository(database)
         self.context = dict(context or {})
+
+    def analyze(self) -> dict[str, Any]:
+        return stratified_analysis(self.repository.list_records(), self.repository.payload_revisions(), self.context)
 
     def ingest(self, record: DomainRecord) -> DomainRecord:
         current = self.repository.get_record(record.record_id)
@@ -29,17 +33,21 @@ class Application:
         self.repository.save_record(replacement, expected_version=current.version)
         return replacement
 
-    def process(self, record: DomainRecord) -> tuple[DomainRecord, Decision]:
-        stored = self.ingest(record)
+    def _decide_and_advance(self, stored: DomainRecord, analysis: Mapping[str, Any]) -> tuple[DomainRecord, Decision]:
         context = dict(self.context)
         context.update(derive_context(stored, self.repository))
         context.update(augment_context(stored, self.repository))
+        context.update(stratum_context(stored, analysis))
         decision = decide(stored, context)
         self.repository.save_decision(decision)
         advanced = advance_for_outcome(stored, decision)
         if advanced.fingerprint != stored.fingerprint:
             self.repository.save_record(advanced, expected_version=stored.version)
         return advanced, decision
+
+    def process(self, record: DomainRecord) -> tuple[DomainRecord, Decision]:
+        stored = self.ingest(record)
+        return self._decide_and_advance(stored, self.analyze())
 
     def run_fixture(self, fixture: Mapping[str, Any], output: str | Path) -> dict[str, Any]:
         records = records_from_fixture(fixture)
@@ -48,18 +56,22 @@ class Application:
         completed = self.repository.completed_run(run_id)
         if completed is not None:
             return completed
+        ingested = [self.ingest(record) for record in records]
+        analysis = self.analyze()
         decisions: dict[str, Decision] = {}
         final_records: list[DomainRecord] = []
-        for record in records:
-            final_record, decision = self.process(record)
+        for stored in ingested:
+            final_record, decision = self._decide_and_advance(stored, analysis)
             final_records.append(final_record)
-            decisions[record.record_id] = decision
+            decisions[stored.record_id] = decision
         snapshot = self.repository.snapshot()
         if snapshot["chain_errors"]:
             raise ContractError("audit chain verification failed")
-        manifest = export_bundle(output, final_records, decisions, snapshot, self.repository.event_rows())
+        manifest = export_bundle(output, final_records, decisions, snapshot, self.repository.event_rows(), analysis)
         result = {"run_id": run_id, "fixture_hash": fixture_hash, "records": len(final_records),
-                  "decisions": len(decisions), "manifest": manifest, "snapshot": snapshot}
+                  "decisions": len(decisions), "manifest": manifest, "snapshot": snapshot,
+                  "analysis_hash": analysis["analysis_hash"], "scope_hash": analysis["scope"]["scope_hash"],
+                  "analysis": analysis}
         self.repository.finish_run(run_id, result)
         return result
 
